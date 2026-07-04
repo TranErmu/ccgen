@@ -183,7 +183,8 @@ mod tests {
         let config = CcgenConfig {
             root: PathBuf::from("."),
             compiler: None,
-            std: None,
+            std_c: None,
+            std_cpp: None,
             defines: vec![],
             undefs: vec![],
             include_dirs: vec![],
@@ -216,7 +217,8 @@ mod tests {
         let config = CcgenConfig {
             root: tmp.path().to_path_buf(),
             compiler: None,
-            std: None,
+            std_c: None,
+            std_cpp: None,
             defines: vec![],
             undefs: vec![],
             include_dirs: vec![rel],

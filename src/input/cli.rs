@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use crate::types::RawConfig;
+use crate::types::{parse_std, RawConfig};
 
 /// C/C++ compile_commands.json generator
 #[derive(Parser, Debug)]
@@ -35,7 +35,7 @@ pub struct CliArgs {
     #[arg(long = "compiler", value_name = "NAME")]
     pub compiler: Option<String>,
 
-    /// Language standard (e.g. c11, c17, c++20)
+    /// Language standard (e.g. c11, c++17, or comma-separated c11,c++17)
     #[arg(long = "std", value_name = "STD")]
     pub std: Option<String>,
 
@@ -66,10 +66,15 @@ pub struct CliArgs {
 
 impl CliArgs {
     pub fn to_raw_config(self) -> RawConfig {
+        let (std_c, std_cpp) = match self.std {
+            Some(ref v) => parse_std(v),
+            None => (None, None),
+        };
         RawConfig {
             root: self.root,
             compiler: self.compiler,
-            std: self.std,
+            std_c,
+            std_cpp,
             defines: self.defines,
             undefs: self.undefs,
             includes: self.includes,
@@ -172,7 +177,16 @@ mod tests {
         let args = CliArgs::try_parse_from(["ccgen", "--compiler", "clang", "--std", "c17"]).unwrap();
         let cfg = args.to_raw_config();
         assert_eq!(cfg.compiler, Some("clang".to_string()));
-        assert_eq!(cfg.std, Some("c17".to_string()));
+        assert_eq!(cfg.std_c, Some("c17".to_string()));
+        assert!(cfg.std_cpp.is_none());
+    }
+
+    #[test]
+    fn test_std_comma_separated() {
+        let args = CliArgs::try_parse_from(["ccgen", "--std", "c11,c++17"]).unwrap();
+        let cfg = args.to_raw_config();
+        assert_eq!(cfg.std_c, Some("c11".to_string()));
+        assert_eq!(cfg.std_cpp, Some("c++17".to_string()));
     }
 
     #[test]
@@ -220,7 +234,8 @@ mod tests {
         assert_eq!(cfg.excludes, vec!["*.test.*"]);
         assert_eq!(cfg.exclude_dirs, vec!["test"]);
         assert_eq!(cfg.compiler, Some("gcc".to_string()));
-        assert_eq!(cfg.std, Some("c11".to_string()));
+        assert_eq!(cfg.std_c, Some("c11".to_string()));
+        assert!(cfg.std_cpp.is_none());
         assert!(cfg.no_gitignore);
         assert_eq!(cfg.output, Some(PathBuf::from("/tmp/output.json")));
     }

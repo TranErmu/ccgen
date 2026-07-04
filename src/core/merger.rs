@@ -15,11 +15,14 @@ pub fn merge(cli: RawConfig, file: RawConfig) -> CcgenConfig {
 
     let cli_compiler = cli.compiler.as_ref().cloned();
     let file_compiler = file.compiler.as_ref().cloned();
-    let cli_std = cli.std.as_ref().cloned();
-    let file_std = file.std.as_ref().cloned();
+    let cli_std_c = cli.std_c.as_ref().cloned();
+    let file_std_c = file.std_c.as_ref().cloned();
+    let cli_std_cpp = cli.std_cpp.as_ref().cloned();
+    let file_std_cpp = file.std_cpp.as_ref().cloned();
 
     let compiler = cli.compiler.or(file.compiler);
-    let std = cli.std.or(file.std);
+    let std_c = cli.std_c.or(file.std_c);
+    let std_cpp = cli.std_cpp.or(file.std_cpp);
     let no_gitignore = cli.no_gitignore || file.no_gitignore;
 
     let output = cli
@@ -53,7 +56,8 @@ pub fn merge(cli: RawConfig, file: RawConfig) -> CcgenConfig {
     let config = CcgenConfig {
         root,
         compiler,
-        std,
+        std_c,
+        std_cpp,
         defines,
         undefs,
         include_dirs,
@@ -72,9 +76,14 @@ pub fn merge(cli: RawConfig, file: RawConfig) -> CcgenConfig {
             if cli_compiler.is_some() { "CLI" } else if file_compiler.is_some() { "config file" } else { "default" }
         );
         eprintln!(
-            "[config] std: {:?} (from {})",
-            config.std,
-            if cli_std.is_some() { "CLI" } else if file_std.is_some() { "config file" } else { "default" }
+            "[config] std_c: {:?} (from {})",
+            config.std_c,
+            if cli_std_c.is_some() { "CLI" } else if file_std_c.is_some() { "config file" } else { "default" }
+        );
+        eprintln!(
+            "[config] std_cpp: {:?} (from {})",
+            config.std_cpp,
+            if cli_std_cpp.is_some() { "CLI" } else if file_std_cpp.is_some() { "config file" } else { "default" }
         );
         eprintln!(
             "[config] root: {:?} (from {})",
@@ -122,7 +131,8 @@ mod tests {
     fn empty_raw() -> RawConfig {
         RawConfig {
             compiler: None,
-            std: None,
+            std_c: None,
+            std_cpp: None,
             defines: vec![],
             undefs: vec![],
             includes: vec![],

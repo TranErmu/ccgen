@@ -52,8 +52,17 @@ pub fn build_entry(
         arguments.push(name.clone());
     }
 
-    if let Some(std) = &config.std {
+    if let Some(std) = match lang {
+        "c" => config.std_c.as_deref(),
+        _ => config.std_cpp.as_deref(),
+    } {
         arguments.push(format!("-std={}", std));
+    } else {
+        let default_std = match lang {
+            "c" => "gnu11",
+            _ => "gnu++11",
+        };
+        arguments.push(format!("-std={}", default_std));
     }
 
     if config.verbose {
@@ -78,7 +87,8 @@ mod tests {
         CcgenConfig {
             root: PathBuf::from("/project"),
             compiler: None,
-            std: None,
+            std_c: None,
+            std_cpp: None,
             defines: vec![],
             undefs: vec![],
             include_dirs: vec![],
@@ -142,7 +152,7 @@ mod tests {
             },
         ];
         config.undefs = vec!["OLD".into()];
-        config.std = Some("gnu11".into());
+        config.std_c = Some("gnu11".into());
 
         let source = Path::new("/project/src/main.c");
         let include_dirs = vec![PathBuf::from("/project/include")];
@@ -176,7 +186,7 @@ mod tests {
         let source = Path::new("foo.c");
         let entry = build_entry(&config, source, &[]);
 
-        assert_args!(entry, &["clang", "-x", "c", "-c", "foo.c",]);
+        assert_args!(entry, &["clang", "-x", "c", "-c", "foo.c", "-std=gnu11"]);
     }
 
     #[test]
@@ -191,6 +201,7 @@ mod tests {
             "c++",
             "-c",
             "/project/src/bar.cpp",
+            "-std=gnu++11",
         ]);
     }
 
@@ -200,7 +211,7 @@ mod tests {
         let source = Path::new("main.c");
         let entry = build_entry(&config, source, &[]);
 
-        assert_args!(entry, &["gcc", "-x", "c", "-c", "main.c",]);
+        assert_args!(entry, &["gcc", "-x", "c", "-c", "main.c", "-std=gnu11"]);
     }
 
     #[test]
@@ -223,6 +234,7 @@ mod tests {
             "/inc1",
             "-I",
             "/inc2",
+            "-std=gnu11",
         ]);
     }
 
@@ -256,6 +268,7 @@ mod tests {
             "main.c",
             "-D",
             "VERSION=42",
+            "-std=gnu11",
         ]);
     }
 
@@ -278,6 +291,7 @@ mod tests {
             "main.c",
             "-D",
             "DEBUG",
+            "-std=gnu11",
         ]);
     }
 
@@ -297,13 +311,14 @@ mod tests {
             "main.c",
             "-U",
             "NDEBUG",
+            "-std=gnu11",
         ]);
     }
 
     #[test]
     fn build_entry_std() {
         let mut config = test_config();
-        config.std = Some("c17".into());
+        config.std_c = Some("c17".into());
 
         let source = Path::new("main.c");
         let entry = build_entry(&config, source, &[]);
@@ -316,5 +331,32 @@ mod tests {
             "main.c",
             "-std=c17",
         ]);
+    }
+
+    #[test]
+    fn build_entry_std_cpp_uses_std_cpp() {
+        let mut config = test_config();
+        config.std_c = Some("c11".into());
+        config.std_cpp = Some("c++17".into());
+
+        let c_entry = build_entry(&config, Path::new("foo.c"), &[]);
+        let cpp_entry = build_entry(&config, Path::new("bar.cpp"), &[]);
+
+        assert!(c_entry.arguments.iter().any(|a| a == "-std=c11"));
+        assert!(cpp_entry.arguments.iter().any(|a| a == "-std=c++17"));
+    }
+
+    #[test]
+    fn build_entry_default_std_c() {
+        let config = test_config();
+        let entry = build_entry(&config, Path::new("main.c"), &[]);
+        assert!(entry.arguments.iter().any(|a| a == "-std=gnu11"));
+    }
+
+    #[test]
+    fn build_entry_default_std_cpp() {
+        let config = test_config();
+        let entry = build_entry(&config, Path::new("main.cpp"), &[]);
+        assert!(entry.arguments.iter().any(|a| a == "-std=gnu++11"));
     }
 }

@@ -57,7 +57,8 @@ mod tests {
         CcgenConfig {
             root,
             compiler: None,
-            std: None,
+            std_c: None,
+            std_cpp: None,
             defines: vec![],
             undefs: vec![],
             include_dirs: vec![],

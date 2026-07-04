@@ -16,7 +16,8 @@ fn base_config() -> CcgenConfig {
         root: fixture_dir(),
         output: PathBuf::from(""),
         compiler: None,
-        std: None,
+        std_c: None,
+        std_cpp: None,
         defines: vec![],
         undefs: vec![],
         include_dirs: vec![],
@@ -163,7 +164,7 @@ fn compiler_override() {
 #[test]
 fn language_standard() {
     let mut config = base_config();
-    config.std = Some("c17".into());
+    config.std_c = Some("c17".into());
 
     let entries = run_and_get_entries(config);
     assert_eq!(entries.len(), 5);
@@ -174,7 +175,16 @@ fn language_standard() {
             .iter()
             .map(|v| v.as_str().unwrap())
             .collect();
-        assert!(args.contains(&"-std=c17"), "should contain -std=c17: {:?}", args);
+        let lang = args.iter().position(|&a| a == "-x").map(|i| args[i + 1]);
+        let std_arg = args.iter().find(|a| a.starts_with("-std="));
+
+        match lang {
+            Some("c") => assert_eq!(std_arg, Some(&"-std=c17"),
+                "C file should use -std=c17: {:?}", args),
+            Some("c++") => assert_eq!(std_arg, Some(&"-std=gnu++11"),
+                "C++ file should use default -std=gnu++11: {:?}", args),
+            _ => {}
+        }
     }
 }
 
@@ -253,14 +263,16 @@ fn atomic_write_cleans_temp() {
 fn merge_priority() {
     let cli = RawConfig {
         compiler: Some("clang".into()),
-        std: Some("c17".into()),
+        std_c: Some("c17".into()),
+        std_cpp: Some("c++20".into()),
         defines: vec!["DEBUG=1".into()],
         ..Default::default()
     };
 
     let file = RawConfig {
         compiler: Some("gcc".into()),
-        std: Some("gnu11".into()),
+        std_c: Some("gnu11".into()),
+        std_cpp: Some("gnu++11".into()),
         includes: vec!["file_inc".into()],
         ..Default::default()
     };
@@ -269,8 +281,10 @@ fn merge_priority() {
 
     assert_eq!(result.compiler, Some("clang".into()),
         "CLI compiler should override file compiler");
-    assert_eq!(result.std, Some("c17".into()),
-        "CLI std should override file std");
+    assert_eq!(result.std_c, Some("c17".into()),
+        "CLI std_c should override file std_c");
+    assert_eq!(result.std_cpp, Some("c++20".into()),
+        "CLI std_cpp should override file std_cpp");
     assert!(result.defines.iter().any(|d| d.name == "DEBUG" && d.value == Some("1".into())),
         "CLI defines should be present");
 }
@@ -296,7 +310,8 @@ fn default_config(root: &Path) -> CcgenConfig {
     CcgenConfig {
         root: root.to_path_buf(),
         compiler: None,
-        std: None,
+        std_c: None,
+        std_cpp: None,
         defines: vec![],
         undefs: vec![],
         include_dirs: vec![],

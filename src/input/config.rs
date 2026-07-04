@@ -4,7 +4,7 @@ use anyhow::{bail, Context};
 use serde::Deserialize;
 
 use crate::error::CcgenError;
-use crate::types::RawConfig;
+use crate::types::{parse_std, RawConfig};
 
 #[derive(Deserialize)]
 struct TomlConfig {
@@ -42,8 +42,8 @@ pub fn default_toml_content() -> &'static str {
 # Compiler to use (auto-detected if omitted)
 # compiler = "gcc"
 
-# Language standard (e.g. c11, c17, c++20)
-# std = "c++17"
+# Language standard (e.g. c11, c17, c++20, or comma-separated c11,c++17)
+# std = "c17,c++20"
 
 # Preprocessor defines: -D NAME or -D NAME=VALUE
 # defines = ["DEBUG", "VERSION=1"]
@@ -78,9 +78,14 @@ pub fn write_default_config(root: &Path) -> anyhow::Result<()> {
 
 impl TomlConfig {
     fn into_raw_config(self) -> RawConfig {
+        let (std_c, std_cpp) = match self.std {
+            Some(ref v) => parse_std(v),
+            None => (None, None),
+        };
         RawConfig {
             compiler: self.compiler,
-            std: self.std,
+            std_c,
+            std_cpp,
             defines: self.defines.unwrap_or_default(),
             undefs: self.undefs.unwrap_or_default(),
             includes: self.include.unwrap_or_default(),
@@ -142,7 +147,8 @@ no_gitignore = true
 "#;
         let config = parse_from_str(toml).unwrap();
         assert_eq!(config.compiler, Some("gcc".to_string()));
-        assert_eq!(config.std, Some("c11".to_string()));
+        assert_eq!(config.std_c, Some("c11".to_string()));
+        assert!(config.std_cpp.is_none());
         assert_eq!(config.defines, vec!["FOO", "BAR=1"]);
         assert_eq!(config.undefs, vec!["OLD"]);
         assert_eq!(config.includes, vec!["src", "include"]);
@@ -172,7 +178,8 @@ include = ["src"]
         let toml = "";
         let config = parse_from_str(toml).unwrap();
         assert!(config.compiler.is_none());
-        assert!(config.std.is_none());
+        assert!(config.std_c.is_none());
+        assert!(config.std_cpp.is_none());
         assert!(config.defines.is_empty());
         assert!(config.undefs.is_empty());
         assert!(config.includes.is_empty());
