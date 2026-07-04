@@ -65,7 +65,7 @@ ccgen --exclude "*.test.*" --exclude "build/*"
 
 ```toml
 compiler = "gcc"
-std = "c11"
+std = "c11,c++17"
 defines = ["DEBUG", "VERSION=2"]
 undefs = ["OLD"]
 include = ["src", "include"]
