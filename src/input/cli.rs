@@ -58,6 +58,10 @@ pub struct CliArgs {
     /// Enable verbose output
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
+
+    /// Generate default .ccgen.toml config file template
+    #[arg(long = "init-config")]
+    pub init_config: bool,
 }
 
 impl CliArgs {

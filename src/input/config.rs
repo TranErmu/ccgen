@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
+use anyhow::{bail, Context};
 use serde::Deserialize;
 
 use crate::error::CcgenError;
@@ -33,6 +33,47 @@ pub fn parse(path: &Path) -> anyhow::Result<RawConfig> {
     let toml_config: TomlConfig =
         toml::from_str(&content).map_err(|e| CcgenError::Config(format!("TOML parse error: {}", e)))?;
     Ok(toml_config.into_raw_config())
+}
+
+pub fn default_toml_content() -> &'static str {
+    r#"# ccgen configuration file
+# All options are optional. CLI arguments override config file values.
+
+# Compiler to use (auto-detected if omitted)
+# compiler = "gcc"
+
+# Language standard (e.g. c11, c17, c++20)
+# std = "c++17"
+
+# Preprocessor defines: -D NAME or -D NAME=VALUE
+# defines = ["DEBUG", "VERSION=1"]
+
+# Preprocessor undefines: -U NAME
+# undefs = ["OLD_MACRO"]
+
+# Include search paths (relative to root or absolute)
+# include = ["src", "include"]
+
+# Source file exclude glob patterns
+# exclude = ["*.test.*", "*.spec.*"]
+
+# Include subdirectory excludes (relative to root)
+# exclude_dir = [".git", "target", "build"]
+
+# Disable .gitignore filtering
+# no_gitignore = false
+"#
+}
+
+pub fn write_default_config(root: &Path) -> anyhow::Result<()> {
+    let config_path = root.join(".ccgen.toml");
+    if config_path.exists() {
+        bail!("Error: .ccgen.toml already exists in {}", root.display());
+    }
+    std::fs::write(&config_path, default_toml_content())
+        .with_context(|| format!("Failed to write {}", config_path.display()))?;
+    eprintln!("Created .ccgen.toml in {}", root.display());
+    Ok(())
 }
 
 impl TomlConfig {
@@ -159,5 +200,53 @@ include = ["src"]
         let result = parse(&path);
         std::fs::remove_file(&path).ok();
         result
+    }
+
+    #[test]
+    fn test_default_toml_content_not_empty() {
+        let content = default_toml_content();
+        assert!(!content.is_empty());
+    }
+
+    #[test]
+    fn test_default_toml_content_contains_all_fields() {
+        let content = default_toml_content();
+        assert!(content.contains("compiler"));
+        assert!(content.contains("std"));
+        assert!(content.contains("defines"));
+        assert!(content.contains("undefs"));
+        assert!(content.contains("include"));
+        assert!(content.contains("exclude"));
+        assert!(content.contains("exclude_dir"));
+        assert!(content.contains("no_gitignore"));
+    }
+
+    #[test]
+    fn test_write_default_config_success() {
+        let dir = std::env::temp_dir().join("__ccgen_test_init_config_ok__");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join(".ccgen.toml");
+        let _ = std::fs::remove_file(&config_path);
+
+        let result = write_default_config(&dir);
+        assert!(result.is_ok());
+        assert!(config_path.exists());
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("compiler"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_write_default_config_already_exists() {
+        let dir = std::env::temp_dir().join("__ccgen_test_init_config_exists__");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join(".ccgen.toml");
+        std::fs::write(&config_path, "existing").unwrap();
+
+        let result = write_default_config(&dir);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

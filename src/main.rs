@@ -8,6 +8,16 @@ use ccgen::types::RawConfig;
 
 fn main() -> anyhow::Result<()> {
     let cli_args = CliArgs::parse();
+
+    if cli_args.init_config {
+        if cli_args.dry_run {
+            print!("{}", config::default_toml_content());
+        } else {
+            config::write_default_config(&cli_args.root)?;
+        }
+        return Ok(());
+    }
+
     let cfg_path = cli_args.config.clone();
     let cli_raw = cli_args.to_raw_config();
 
