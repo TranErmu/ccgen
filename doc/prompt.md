@@ -1,451 +1,289 @@
-# ccgen - compile_commands.json 生成器
+# ccgen - 头文件存在性过滤优化
 
 ## 项目概述
 
-ccgen 是一个 Rust CLI 工具，用于为无法立即编译的 C/C++ 项目生成 `compile_commands.json`。
-工具接收用户提供的宏定义、Include 路径和编译器选项，结合项目源码文件列表，生成符合 LLVM JSON Compilation Database 规范的编译命令数据库。
+对 ccgen 工具的 Include 路径解析逻辑进行优化。当前 `include_path.rs` 将用户传入的 `-I` 目录 BFS 展开后全量保留所有子目录，导致不含头文件的空目录也被加入 `compile_commands.json`。本次变更新增头文件存在性过滤，仅保留确实包含 C/C++ 头文件的目录。
 
-### 核心处理流程
+### 变更范围
+
+- **仅修改** `src/core/include_path.rs` 一个文件
+- 不涉及 CLI 解析、配置文件、源码发现或命令生成等其他模块
+- 不新增外部依赖（仅使用 `std::fs`）
+- 不增加新的 CLI 参数或配置选项（过滤是默认行为）
+- 向后兼容：已有功能不变，仅减少不含头文件的 `-I` 条目
+
+### 核心流水线（变更后）
 
 ```
-CLI 参数 ─┐
-          ├─→ 参数合并 → 源码发现 → 编译命令生成 → JSON 输出
-配置文件 ─┘
+用户传入 -I 目录
+    │
+    ▼
+BFS 递归展开（现有逻辑，不变）
+    │
+    ▼
+--exclude-dir 排除（现有逻辑，不变）
+    │
+    ▼
+头文件过滤 ← 本次新增
+    │
+    ▼
+排序 + 去重（现有逻辑，不变）
+    │
+    ▼
+返回 Vec<PathBuf>
 ```
-
-### 优先级规则
-CLI 参数 > `.ccgen.toml` > 默认行为
 
 ---
 
 ## 执行方式
 
-使用 `subagent-driven-development` 技能执行。主 Agent 只做统筹调度，不参与代码实现。
-每个模块由独立的子 Agent 通过 Fork 方式创建并实现。
+使用 `subagent-driven-development` 技能执行。主 Agent 只做统筹调度，不参与代码实现。每个模块由独立的子 Agent 通过 Fork 方式创建并实现。
 
 ### 主 Agent 规则
 
 1. **只做统筹**：跟踪整体进度，管理执行顺序，不写任何代码
-2. **使用 subagent-driven-development 技能**：通过 Fork 创建子 Agent
-3. **严格控制上下文**：每个子 Agent 只获得该模块所需的上下文，不加载全文
-4. **并发控制**：同一时间最多 4 个子 Agent 并行执行
+2. **使用 Fork 创建子 Agent**：每个子 Agent 获得该模块所需的上下文
+3. **严格控制上下文**：每个子 Agent 只获得该模块所需的最小上下文
+4. **并发控制**：同一时间最多 **4** 个子 Agent 并行执行（本变更仅需 2 个并行）
 5. **进度跟踪**：每个子 Agent 完成后，更新任务状态，启动下一批
 
 ### 子 Agent 规则
 
 1. 每个子 Agent 实现一个模块，完成后编写 `doc/detail/design-<module-name>.md` 设计文档
-2. 子 Agent 之间不共享可变状态，通过已确定的接口文件（types.rs）交互
+2. 子 Agent 之间不共享可变状态，通过函数签名接口交互
 3. 必须遵循 tasks.md 中的 checklist，完成后标记 `[x]`
-4. 每个子 Agent 也需要在模块目录编写单元测试
+4. 每个子 Agent 同时编写对应的单元测试
 
 ---
 
-## 模块结构
+## 子 Agent 分解
 
-```
-ccgen/
-├── Cargo.toml
-├── .ccgen.toml                          # 示例配置文件（测试用）
-├── src/
-│   ├── main.rs                          # 入口：组装完整处理流程
-│   ├── cli.rs                           # CLI 参数定义（clap derive）
-│   ├── config.rs                        # 配置文件 (.ccgen.toml) 解析
-│   ├── merger.rs                        # 合并 CLI 和配置文件的参数
-│   ├── discover.rs                      # 源码文件发现和过滤
-│   ├── include_path.rs                  # Include 路径递归发现和排除
-│   ├── compile_cmd.rs                   # 为每个源文件构建编译命令
-│   ├── output.rs                        # JSON 生成和文件写入
-│   ├── types.rs                         # 核心数据结构定义
-│   └── error.rs                         # 错误类型定义
-├── tests/
-│   └── integration_test.rs              # 集成测试
-└── doc/
-    └── detail/
-        ├── design-setup.md
-        ├── design-cli-parsing.md
-        ├── design-config-parsing.md
-        ├── design-source-discovery.md
-        ├── design-include-path.md
-        ├── design-merger.md
-        ├── design-compile-cmd.md
-        ├── design-output.md
-        ├── design-main-integration.md
-        └── design-tests.md
-```
+本变更按职责分为 **2 个子 Agent**，可并行执行：
 
----
+### Sub-agent A：头文件过滤核心算法
 
-## 核心数据结构（types.rs）
+| 项 | 说明 |
+|---|---|
+| 模块名 | `header-filter-algorithm` |
+| 修改文件 | `src/core/include_path.rs`（新增函数） |
+| 设计文档 | `doc/detail/design-header-filter-algorithm.md` |
+| 前置依赖 | 无（纯算法，仅依赖标准库 `Path`/`PathBuf`） |
 
-每个子 Agent 都依赖此接口，在 Phase 0 中先行定义：
+**需要实现的函数：**
 
 ```rust
-// 原始配置（来自 CLI 或配置文件）
-pub struct RawConfig {
-    pub compiler: Option<String>,
-    pub std: Option<String>,
-    pub defines: Vec<String>,
-    pub undefs: Vec<String>,
-    pub includes: Vec<String>,
-    pub excludes: Vec<String>,
-    pub exclude_dirs: Vec<String>,
-    pub no_gitignore: bool,
-    pub root: PathBuf,
-    pub output: Option<PathBuf>,
+/// 根据扩展名白名单判断文件是否为 C/C++ 头文件
+/// 白名单（不区分大小写）：.h, .hh, .hpp, .hxx, .h++, .ipp, .tcc, .inl
+fn is_header_file(entry: &std::fs::DirEntry) -> bool
+
+/// 扫描单层目录，检查是否存在至少一个头文件
+/// 遇到权限错误返回 Ok(false)（静默跳过）
+/// 其他 I/O 错误同样返回 Ok(false)
+fn has_header_files_in_dir(path: &Path) -> Result<bool>
+
+/// 对已展开 + 排除后的目录列表执行头文件过滤
+/// 自底向上回溯标记：构建目录树父子关系，从最深目录开始扫描
+/// 如果子目录有头文件则父目录也被标记为保留
+/// 使用 HashMap<PathBuf, bool> 缓存扫描结果
+/// 遇到权限/I/O 错误标记为无头文件，不崩溃
+fn filter_by_headers(dirs: &[PathBuf]) -> Vec<PathBuf>
+```
+
+**算法描述（自底向上回溯标记）：**
+
+```
+输入：已展开 + 排除后的绝对路径列表
+输出：仅保留包含头文件的目录
+
+1. 对 dirs 构建目录树，确定父子关系（通过 Path::starts_with 判断）
+2. 从最深目录开始（按路径长度降序），自底向上处理每个目录：
+   a. 读取目录条目
+   b. 检查每个文件扩展名是否在头文件白名单中
+   c. 如果找到头文件 → 标记 has_header = true
+   d. 如果有子目录已被标记 → 标记 has_header = true
+   e. 权限/I/O 错误 → 标记 has_header = false（静默跳过）
+3. 返回 has_header = true 的所有目录
+```
+
+**测试要求（单元测试）：**
+- 头文件白名单匹配：验证所有 8 种扩展名
+- 大小写不敏感：`.H`, `.HPP` 等大写也应匹配
+- 非头文件排除：`.c`, `.cpp`, `.txt`, `.md` 不应匹配
+- 空目录：返回 false
+- 无权限目录：静默返回 false，不 panic
+- `filter_by_headers` 基本过滤：混合有/无头文件的目录
+- 多层嵌套保留：子目录有头文件时父目录保留
+- 全空分支：整个分支丢弃
+
+**任务来自 tasks.md：** 任务组 1（1.1 ~ 1.3）+ 任务组 2（2.1 ~ 2.5）
+
+### Sub-agent B：流水线集成与测试
+
+| 项 | 说明 |
+|---|---|
+| 模块名 | `pipeline-integration` |
+| 修改文件 | `src/core/include_path.rs`（修改 `resolve_all`）+ 新建测试目录 |
+| 设计文档 | `doc/detail/design-pipeline-integration.md` |
+| 前置依赖 | 需参考 Sub-agent A 的函数签名（函数签名由主 Agent 在启动前确认） |
+
+**修改内容：**
+
+```rust
+// 修改 resolve_all()，在 collect_dirs 后插入 filter_by_headers()
+pub fn resolve_all(config: &CcgenConfig) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+
+    for dir in &config.include_dirs {
+        let abs_dir = if dir.is_absolute() {
+            dir.clone()
+        } else {
+            config.root.join(dir)
+        };
+        collect_dirs(&abs_dir, &config.include_exclude_dirs, &mut result);
+    }
+
+    // ↓↓↓ 新增：头文件过滤 ↓↓↓
+    result = filter_by_headers(&result);
+
+    result.sort();
+    result.dedup();
+    result
+}
+```
+
+**执行顺序保证：**
+1. BFS 展开（现有 `collect_dirs`）
+2. Exclude 排除（现有 `is_excluded_dir`） 
+3. **头文件过滤（`filter_by_headers`）** ← 新增
+4. 排序去重（现有 `sort()` + `dedup()`）
+
+**测试 fixtures 目录结构**（创建于 `tests/fixtures/`）：
+
+```
+tests/fixtures/
+├── include/                  # 顶层目录，无头文件
+│   ├── sub/                  # 含 a.h
+│   │   └── a.h
+│   └── empty/                # 空目录
+├── lib/
+│   └── core/
+│       └── internal/         # 含 b.hpp，上层无头文件
+│           └── b.hpp
+└── docs/                     # 只有 .md 文件，无头文件
+    └── readme.md
+```
+
+**集成测试要求：**
+- 基本过滤：`include/sub/` 有 `a.h` + `include/` 作为父目录 → 两者均保留
+- 多层嵌套：`lib/core/internal/` 有 `b.hpp` → `lib/`、`lib/core/`、`lib/core/internal/` 全保留
+- Exclude 优先级：`--exclude-dir include/sub` 排除后，即使有头文件也不出现
+- 全空目录：`docs/` 全丢，不报错
+- CLI 组合：`-I include -I lib` 多目录合并过滤
+
+**任务来自 tasks.md：** 任务组 3（3.1 ~ 3.6）+ 任务组 4（4.1 ~ 4.7）
+
+---
+
+## 现有代码参考
+
+### 当前 `resolve_all()` 实现
+
+```rust
+// src/core/include_path.rs - 当前代码
+pub fn resolve_all(config: &CcgenConfig) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    for dir in &config.include_dirs {
+        let abs_dir = if dir.is_absolute() {
+            dir.clone()
+        } else {
+            config.root.join(dir)
+        };
+        collect_dirs(&abs_dir, &config.include_exclude_dirs, &mut result);
+    }
+    result.sort();
+    result.dedup();
+    result
+}
+```
+
+### 当前关键内部函数
+
+```rust
+fn collect_dirs(root: &Path, exclude_dirs: &[PathBuf], result: &mut Vec<PathBuf>) {
+    let mut queue = VecDeque::new();
+    queue.push_back(root.to_path_buf());
+    while let Some(dir) = queue.pop_front() {
+        if is_excluded_dir(&dir, exclude_dirs) { continue; }
+        result.push(normalize_path(&dir));
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    queue.push_back(entry.path());
+                }
+            }
+        }
+    }
 }
 
-// 合并后的最终配置
-pub struct CcgenConfig {
-    pub root: PathBuf,
-    pub compiler: Option<String>,
-    pub std: Option<String>,
-    pub defines: Vec<MacroDef>,
-    pub undefs: Vec<String>,
-    pub include_dirs: Vec<PathBuf>,
-    pub include_exclude_dirs: Vec<PathBuf>,
-    pub source_excludes: Vec<String>,
-    pub no_gitignore: bool,
-    pub output: PathBuf,
-    pub verbose: bool,
-    pub dry_run: bool,
+fn is_excluded_dir(path: &Path, exclude_dirs: &[PathBuf]) -> bool {
+    exclude_dirs.iter().any(|ex| path.starts_with(ex) || path == ex)
 }
 
-pub struct MacroDef {
-    pub name: String,
-    pub value: Option<String>,
-}
-
-pub struct CompileEntry {
-    pub directory: PathBuf,
-    pub file: PathBuf,
-    pub arguments: Vec<String>,
-}
-
-// 来源标记，用于 verbose 日志
-pub enum ConfigSource {
-    Cli,
-    ConfigFile,
+fn normalize_path(path: &Path) -> PathBuf {
+    let abs = dunce::simplified(path);
+    let s = abs.to_string_lossy().replace('\\', "/");
+    PathBuf::from(s)
 }
 ```
 
----
+### 已有单元测试
 
-## 执行阶段
+当前 `include_path.rs` 文件末尾已有 `#[cfg(test)] mod tests`，包含以下测试：
+- `bfs_discovers_all_subdirectories`
+- `exclude_dir_omits_directory_and_children`
+- `normalize_path_uses_forward_slashes`
+- `resolve_all_empty_list_returns_empty`
+- `resolve_all_relative_dirs_resolved_against_root`
 
-### Phase 0：项目初始化（1 个子 Agent）
-
-**必须最先执行，无并行依赖。**
-
-| 项 | 说明 |
-|---|---|
-| 模块名 | `setup` |
-| 子 Agent 数 | 1 |
-| 输出文件 | `Cargo.toml`, `src/lib.rs`, `src/types.rs`, `src/error.rs`, `src/main.rs`（骨架）|
-| 设计文档 | `doc/detail/design-setup.md` |
-| 引用 spec | `cli-parsing/spec.md`, `config-parsing/spec.md` 等中涉及的 error 场景 |
-
-**子 Agent 任务：**
-1. 运行 `cargo init --name ccgen`，设置 `edition = "2021"`
-2. 配置 `Cargo.toml` 依赖：
-   - `clap` (feature: `derive`)
-   - `serde` (feature: `derive`)
-   - `toml`
-   - `ignore`
-   - `walkdir`
-   - `serde_json`
-   - `anyhow`
-   - `glob`
-   - `dunce`
-3. 创建 `src/lib.rs` 作为库入口，声明所有模块（仅骨架，函数体留空）
-4. 实现 `src/types.rs`：定义上述所有数据结构（RawConfig, CcgenConfig, MacroDef, CompileEntry, ConfigSource）
-5. 实现 `src/error.rs`：定义 `CcgenError` 枚举及 `From` trait 实现
-6. 初始化 `src/main.rs` 为仅有 `fn main() {}` 的空壳
-7. 创建测试项目目录 `tests/fixtures/`（包含多级目录、源文件、.gitignore）
+Sub-agent B 需注意**不删改**这些现有测试，仅新增。
 
 ---
 
-### Phase 1：数据源模块（最多 4 个子 Agent 并行）
+## 执行计划
 
-依赖 Phase 0 完成后启动。四个模块之间**无相互依赖**，可完全并行。
-
-#### Module 1.1：CLI 参数解析
-
-| 项 | 说明 |
-|---|---|
-| 模块名 | `cli-parsing` |
-| 输出文件 | `src/cli.rs` |
-| 设计文档 | `doc/detail/design-cli-parsing.md` |
-| 引用 spec | `specs/cli-parsing/spec.md` |
-
-**接口定义：**
-```rust
-pub fn parse_args() -> RawConfig
-```
-
-**实现要求：**
-- 使用 clap derive macro 定义 `CliArgs` 结构体
-- 支持所有命令行参数：`[ROOT]`, `-D`, `-U`, `-I`, `--exclude`, `--exclude-dir`, `--compiler`, `--std`, `--no-gitignore`, `--output`, `--config`, `--dry-run`, `--verbose`
-- 实现 `CliArgs::to_raw_config() -> RawConfig` 方法
-- -D 格式支持：`-D NAME`（空值）, `-D NAME=VALUE`, `-D NAME="spaced value"`
-- -U 格式：`-U NAME`
-- -I 可重复
-- 自动生成 `--help`
-- **编写单元测试**覆盖所有参数解析场景
-
-**任务来自 tasks.md：** 任务组 3（3.1 ~ 3.14）
-
-#### Module 1.2：配置文件解析
-
-| 项 | 说明 |
-|---|---|
-| 模块名 | `config-parsing` |
-| 输出文件 | `src/config.rs` |
-| 设计文档 | `doc/detail/design-config-parsing.md` |
-| 引用 spec | `specs/config-parsing/spec.md` |
-
-**接口定义：**
-```rust
-pub fn find(root: &Path) -> Option<PathBuf>
-pub fn parse(path: &Path) -> Result<RawConfig>
-```
-
-**实现要求：**
-- 定义 `TomlConfig` 结构体（通过 serde Deserialize）
-- `find()` 自动从项目根目录查找 `.ccgen.toml`
-- `parse()` 读取并解析 TOML 文件，转换为 `RawConfig`
-- 配置文件不存在时优雅降级
-- 格式错误时返回人类可读错误
-- **编写单元测试**覆盖完整配置、部分字段、格式错误场景
-
-**任务来自 tasks.md：** 任务组 4（4.1 ~ 4.5）
-
-#### Module 1.3：源码文件发现
-
-| 项 | 说明 |
-|---|---|
-| 模块名 | `source-discovery` |
-| 输出文件 | `src/discover.rs` |
-| 设计文档 | `doc/detail/design-source-discovery.md` |
-| 引用 spec | `specs/source-discovery/spec.md` |
-
-**接口定义：**
-```rust
-pub fn find_sources(config: &CcgenConfig) -> Vec<PathBuf>
-```
-
-**实现要求：**
-- 递归扫描项目目录下的 `.c/.cpp/.cc/.cxx` 文件
-- 默认遵守 `.gitignore`（使用 `ignore` crate）
-- 支持 `--no-gitignore` 禁用
-- 支持 `--exclude` glob 模式（使用 `glob` crate 匹配）
-- 排除 `.h/.hpp` 头文件
-- 返回绝对路径
-- **编写单元测试**覆盖 gitignore 过滤、exclude 排除、no-gitignore 场景
-
-**任务来自 tasks.md：** 任务组 7（7.1 ~ 7.7）
-
-#### Module 1.4：Include 路径处理
-
-| 项 | 说明 |
-|---|---|
-| 模块名 | `include-path` |
-| 输出文件 | `src/include_path.rs` |
-| 设计文档 | `doc/detail/design-include-path.md` |
-| 引用 spec | `specs/include-path/spec.md` |
-
-**接口定义：**
-```rust
-pub fn resolve_all(config: &CcgenConfig) -> Vec<PathBuf>
-```
-
-**实现要求：**
-- 对每个用户传入的 Include 目录执行 BFS 递归遍历，收集所有子目录
-- 支持 `--exclude-dir` 排除指定目录及其所有子目录
-- 所有路径转换为绝对路径（使用 `dunce` 处理 Windows）
-- 路径分隔符统一为正斜杠 `/`
-- **编写单元测试**覆盖递归发现、排除、路径归一化场景
-
-**任务来自 tasks.md：** 任务组 8（8.1 ~ 8.5）
-
----
-
-### Phase 2：处理与输出模块（最多 3 个子 Agent 并行）
-
-需要 Phase 1 完成后启动，但三个模块之间**无相互依赖**。
-
-#### Module 2.1：参数合并
-
-| 项 | 说明 |
-|---|---|
-| 模块名 | `merger` |
-| 输出文件 | `src/merger.rs` |
-| 设计文档 | `doc/detail/design-merger.md` |
-| 引用 spec | `specs/macro-config/spec.md` |
-| 前置依赖 | 需读取 `cli.rs` 和 `config.rs` 的函数签名 |
-
-**接口定义：**
-```rust
-pub fn merge(cli: RawConfig, file: RawConfig) -> CcgenConfig
-```
-
-**实现要求：**
-- CLI 优先级高于配置文件
-- defines 合并：同名宏以 CLI 为准
-- undefs、include、exclude、exclude_dir 以 CLI 完全覆盖配置文件
-- compiler、std、no_gitignore、output 以 CLI 优先
-- ROOT 路径转换为绝对路径
-- `--verbose` 模式下标注每个配置项的来源
-- **编写单元测试**覆盖优先级冲突、合并逻辑
-
-**任务来自 tasks.md：** 任务组 5（5.1 ~ 5.6）
-
-#### Module 2.2：编译命令构建
-
-| 项 | 说明 |
-|---|---|
-| 模块名 | `compile-cmd` |
-| 输出文件 | `src/compile_cmd.rs` |
-| 设计文档 | `doc/detail/design-compile-cmd.md` |
-| 引用 spec | `specs/compiler-inference/spec.md`, `specs/language-standard/spec.md` |
-
-**接口定义：**
-```rust
-pub fn infer_compiler(file_path: &Path) -> &str
-pub fn build_entry(config: &CcgenConfig, source: &Path, include_dirs: &[PathBuf]) -> CompileEntry
-```
-
-**实现要求：**
-- `infer_compiler`: `.c` → `gcc`, `.cpp/.cc/.cxx` → `g++`；config 中指定时覆盖
-- `build_entry` arguments 数组格式：`[compiler, "-x", <lang>, "-c", <file>, "-I", <path>, ..., "-D", <macro>, ...]`
-- 根据扩展名确定语言参数：`c` 或 `c++`
-- 展开 Include 路径为 `-I` 对（每个路径一个 `-I` + 路径）
-- 展开宏定义为 `-D` 对（有值：`-D` + `NAME=VALUE`；无值：`-D` + `NAME`）
-- 展开取消定义为 `-UNAME` 元素
-- 如果指定了 `--std`，添加 `-std=<STD>` 元素
-- 编译器仅作为字符串，不校验系统存在
-- `directory` 字段为项目根绝对路径
-- `--verbose` 模式输出构建日志
-- **编写单元测试**覆盖编译器推断、arguments 格式、语言标准
-
-**任务来自 tasks.md：** 任务组 9（9.1 ~ 9.4）+ 任务组 10（10.1 ~ 10.9）
-
-#### Module 2.3：输出生成
-
-| 项 | 说明 |
-|---|---|
-| 模块名 | `output` |
-| 输出文件 | `src/output.rs` |
-| 设计文档 | `doc/detail/design-output.md` |
-| 引用 spec | `specs/output-generation/spec.md` |
-
-**接口定义：**
-```rust
-pub fn write_to_json(entries: &[CompileEntry], path: &Path) -> Result<()>
-pub fn print_json(entries: &[CompileEntry]) -> Result<()>
-```
-
-**实现要求：**
-- JSON 序列化为符合 LLVM Compilation Database 规范的数组
-- 每条包含 `directory`、`file`、`arguments` 三个字段，无 `output`
-- 写入时先写临时文件，再通过 `std::fs::rename` 原子替换
-- 支持 dry-run 模式输出到 stdout
-- 如果输出目录不存在，递归创建
-- **编写单元测试**覆盖 JSON 格式、原子写入、dry-run
-
-**任务来自 tasks.md：** 任务组 11（11.1 ~ 11.5）
-
----
-
-### Phase 3：主流程集成（1 个子 Agent）
-
-| 项 | 说明 |
-|---|---|
-| 模块名 | `main-integration` |
-| 输出文件 | `src/main.rs`（完整实现） |
-| 设计文档 | `doc/detail/design-main-integration.md` |
-| 前置依赖 | 所有 Phase 0-2 模块完成 |
-
-**接口定义（src/lib.rs）：**
-```rust
-pub fn run(config: CcgenConfig) -> Result<()>
-```
-
-**实现要求：**
-- 组装完整处理流程：解析 CLI → 解析 Config → 合并 → 源码发现 → Include 路径发现 → 为每个源文件构建编译命令 → JSON 输出
-- 使用 anyhow 传播错误
-- `--verbose` 输出各阶段处理摘要（发现的源文件数、Include 路径数、生成的命令数）
-- 无源文件时输出警告但正常退出
-- `src/lib.rs` 中暴露 `run(config)` 供测试调用
-- `main.rs` 仅作为薄的 CLI 入口：parse_args → run
-
-**任务来自 tasks.md：** 任务组 12（12.1 ~ 12.4）
-
----
-
-### Phase 4：集成测试（1 个子 Agent）
-
-| 项 | 说明 |
-|---|---|
-| 模块名 | `tests` |
-| 输出文件 | `tests/integration_test.rs` |
-| 设计文档 | `doc/detail/design-tests.md` |
-| 前置依赖 | 所有 Phase 0-3 模块完成 |
-
-**实现要求：**
-- 使用 `tests/fixtures/` 下的测试项目目录
-- 通过调用 `ccgen::run()` 进行集成测试
-- 覆盖以下场景：
-  1. 基本用法——扫描目录生成 JSON
-  2. `-D` 宏定义注入
-  3. `-I` Include 路径递归发现
-  4. `--exclude` 排除源文件
-  5. `--exclude-dir` 排除 Include 子目录
-  6. `--compiler` 覆盖编译器
-  7. `--std` 语言标准
-  8. `--no-gitignore` 禁用 gitignore 过滤
-  9. `--dry-run` 输出到 stdout
-  10. 参数合并优先级（CLI > 配置文件）
-  11. 所有路径为绝对路径且使用正斜杠
-  12. 原子写入（验证临时文件被清理）
-  13. `--config` 指定配置文件路径
-
-**任务来自 tasks.md：** 任务组 13（13.1 ~ 13.14）
+| 阶段 | 子 Agent | 依赖 | 预计产出 |
+|------|----------|------|----------|
+| **Phase 1**（并行） | **A**: 头文件过滤算法 | 无 | `is_header_file`, `has_header_files_in_dir`, `filter_by_headers` + 单元测试 + 设计文档 |
+| | **B**: 流水线集成 + 测试 | 需确认签名 | 修改 `resolve_all` + 测试 fixtures + 集成测试 + 设计文档 |
+| **Phase 2** | 验证与修复 | A + B 完成 | `cargo build` + `cargo test` 全部通过 |
 
 ---
 
 ## 引用 spec 索引
 
-| 模块名 | 引用 specs 路径 |
-|--------|----------------|
-| setup | 全局类型需求 |
-| cli-parsing | `specs/cli-parsing/spec.md` |
-| config-parsing | `specs/config-parsing/spec.md` |
-| source-discovery | `specs/source-discovery/spec.md` |
-| include-path | `specs/include-path/spec.md` |
-| merger | `specs/macro-config/spec.md` |
-| compile-cmd | `specs/compiler-inference/spec.md`, `specs/language-standard/spec.md` |
-| output | `specs/output-generation/spec.md` |
-| main-integration | 全局流程需求 |
-| tests | 全局验收标准 |
+| 模块 | 引用 specs 路径 |
+|------|----------------|
+| header-filter-algorithm | `specs/include-path/spec.md`（ADDED Requirements 部分） |
+| pipeline-integration | `specs/include-path/spec.md`（MODIFIED Requirements + ADDED Requirements） |
 
 ---
 
 ## 工程规范
 
-1. **错误处理**：使用 `anyhow::Result` 作为函数返回值，`CcgenError` 枚举用于模块内部
-2. **路径处理**：所有对外输出的路径必须是绝对路径 + 正斜杠 `/`
-3. **编码风格**：遵循 Rust 2021 edition 标准，使用 `cargo fmt` 格式化
-4. **代码质量**：每个子 Agent 交付前确保 `cargo build` 通过
-5. **测试**：每个模块至少包含 3 个有意义的单元测试，集成测试覆盖 13+ 场景
-6. **设计文档**：每个子 Agent 完成后编写 `doc/detail/design-<module-name>.md`，包含模块接口、关键实现决策、测试策略
+1. **错误处理**：权限/I/O 错误静默返回 `Ok(false)`，不 panic，不输出警告
+2. **无新增依赖**：仅使用 `std::fs::read_dir`，不引入新的 crate
+3. **测试独立性**：使用 `tempfile::TempDir` 创建临时目录（已有依赖）
+4. **代码风格**：遵循现有代码风格，与 `collect_dirs`、`normalize_path` 等函数保持一致
+5. **设计文档**：每个子 Agent 完成后编写 `doc/detail/design-<module-name>.md`
 
 ---
 
 ## 完成标准
 
 - [ ] `cargo build` 编译通过，无 warning
-- [ ] `cargo test` 所有单元测试 + 集成测试通过
+- [ ] `cargo test` 全量测试通过（含现有 5 个 + 新增单元测试 + 新增集成测试）
 - [ ] `cargo clippy` 无 lint 警告
 - [ ] 所有 tasks.md 中的子任务标记为已完成 `[x]`
-- [ ] 所有 `doc/detail/design-*.md` 设计文档已生成
-- [ ] 测试 fixtures 中的测试项目能正确使用 `ccgen` 生成 `compile_commands.json`
+- [ ] `doc/detail/design-header-filter-algorithm.md` 已生成
+- [ ] `doc/detail/design-pipeline-integration.md` 已生成
+- [ ] 验收标准：含头文件的目录被保留，无头文件的目录被丢弃，Exclude 优先于过滤

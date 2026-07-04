@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::types::CcgenConfig;
@@ -14,6 +14,8 @@ pub fn resolve_all(config: &CcgenConfig) -> Vec<PathBuf> {
         };
         collect_dirs(&abs_dir, &config.include_exclude_dirs, &mut result);
     }
+
+    result = filter_by_headers(&result);
 
     result.sort();
     result.dedup();
@@ -48,6 +50,66 @@ fn normalize_path(path: &Path) -> PathBuf {
     let abs = dunce::simplified(path);
     let s = abs.to_string_lossy().replace('\\', "/");
     PathBuf::from(s)
+}
+
+fn is_header_file(entry: &std::fs::DirEntry) -> bool {
+    if !entry.path().is_file() {
+        return false;
+    }
+    match entry.path().extension().and_then(|e| e.to_str()) {
+        Some(ext) => matches!(
+            ext.to_lowercase().as_str(),
+            "h" | "hh" | "hpp" | "hxx" | "h++" | "ipp" | "tcc" | "inl"
+        ),
+        None => false,
+    }
+}
+
+fn has_header_files_in_dir(path: &Path) -> std::io::Result<bool> {
+    let entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(false),
+    };
+    for entry in entries.flatten() {
+        if is_header_file(&entry) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn filter_by_headers(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut cache: HashMap<PathBuf, bool> = HashMap::new();
+
+    let mut sorted_dirs: Vec<PathBuf> = dirs.to_vec();
+    sorted_dirs.sort_by_key(|b| std::cmp::Reverse(b.components().count()));
+
+    let mut results: HashSet<PathBuf> = HashSet::new();
+
+    for dir in &sorted_dirs {
+        let has_headers = {
+            if let Some(&cached) = cache.get(dir) {
+                cached
+            } else {
+                let found = has_header_files_in_dir(dir).unwrap_or(false);
+                cache.insert(dir.clone(), found);
+                found
+            }
+        };
+
+        if has_headers {
+            results.insert(dir.clone());
+            for other in dirs {
+                if dir.starts_with(other) && !results.contains(other) {
+                    results.insert(other.clone());
+                }
+            }
+        }
+    }
+
+    let mut result: Vec<PathBuf> = results.into_iter().collect();
+    result.sort();
+    result
 }
 
 #[cfg(test)]
@@ -141,6 +203,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let sub = tmp.path().join("inc");
         fs::create_dir_all(&sub).unwrap();
+        // add a header file so the directory passes header filtering
+        File::create(sub.join("types.h")).unwrap();
         // need a parent dir so root.join("inc") resolves to sub
         let root_dir = tmp.path().join("root");
         fs::create_dir_all(&root_dir).unwrap();
@@ -168,5 +232,122 @@ mod tests {
         let s = result[0].to_string_lossy();
         assert!(!s.contains('\\'), "must have forward slashes: {s}");
         assert!(s.contains("inc"), "{s} must contain 'inc'");
+    }
+
+    #[test]
+    fn test_is_header_file_various_extensions() {
+        let tmp = TempDir::new().unwrap();
+        for ext in &["h", "hh", "hpp", "hxx", "h++", "ipp", "tcc", "inl"] {
+            let path = tmp.path().join(format!("file.{ext}"));
+            File::create(&path).unwrap();
+            let entry = std::fs::read_dir(tmp.path())
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .find(|e| e.path() == path)
+                .unwrap();
+            assert!(
+                is_header_file(&entry),
+                "expected {ext} to be a header"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_header_file_case_insensitive() {
+        let tmp = TempDir::new().unwrap();
+        for name in &["Foo.H", "Bar.HPP"] {
+            let path = tmp.path().join(name);
+            File::create(&path).unwrap();
+            let entry = std::fs::read_dir(tmp.path())
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .find(|e| e.path() == path)
+                .unwrap();
+            assert!(is_header_file(&entry), "expected {name} to be a header");
+        }
+    }
+
+    #[test]
+    fn test_is_header_file_non_headers() {
+        let tmp = TempDir::new().unwrap();
+        for ext in &["c", "cpp", "txt", "md"] {
+            let path = tmp.path().join(format!("file.{ext}"));
+            File::create(&path).unwrap();
+            let entry = std::fs::read_dir(tmp.path())
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .find(|e| e.path() == path)
+                .unwrap();
+            assert!(
+                !is_header_file(&entry),
+                "expected {ext} to NOT be a header"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_header_file_directory() {
+        let tmp = TempDir::new().unwrap();
+        let dir_path = tmp.path().join("foo.h");
+        fs::create_dir(&dir_path).unwrap();
+        let entry = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| e.path() == dir_path)
+            .unwrap();
+        assert!(!is_header_file(&entry), "directory should not be a header");
+    }
+
+    #[test]
+    fn test_has_header_files_empty_dir() {
+        let tmp = TempDir::new().unwrap();
+        assert!(!has_header_files_in_dir(tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn test_has_header_files_with_headers() {
+        let tmp = TempDir::new().unwrap();
+        File::create(tmp.path().join("foo.h")).unwrap();
+        assert!(has_header_files_in_dir(tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn test_filter_by_headers_basic() {
+        let tmp = TempDir::new().unwrap();
+        let dir_a = tmp.path().join("a");
+        let dir_b = tmp.path().join("b");
+        let dir_c = tmp.path().join("c");
+        fs::create_dir(&dir_a).unwrap();
+        fs::create_dir(&dir_b).unwrap();
+        fs::create_dir(&dir_c).unwrap();
+        File::create(dir_a.join("x.h")).unwrap();
+        File::create(dir_b.join("x.c")).unwrap();
+
+        let result = filter_by_headers(&[dir_a.clone(), dir_b, dir_c]);
+        assert_eq!(result.len(), 1);
+        assert!(result.contains(&dir_a));
+    }
+
+    #[test]
+    fn test_filter_by_headers_nested() {
+        let tmp = TempDir::new().unwrap();
+        let parent = tmp.path().join("parent");
+        let child = parent.join("child");
+        fs::create_dir_all(&child).unwrap();
+        File::create(child.join("x.h")).unwrap();
+
+        let result = filter_by_headers(&[parent.clone(), child.clone()]);
+        assert!(result.contains(&child));
+        assert!(result.contains(&parent));
+    }
+
+    #[test]
+    fn test_filter_by_headers_empty_branch() {
+        let tmp = TempDir::new().unwrap();
+        let branch = tmp.path().join("empty").join("deep");
+        fs::create_dir_all(&branch).unwrap();
+
+        let result = filter_by_headers(&[branch]);
+        assert!(result.is_empty());
     }
 }

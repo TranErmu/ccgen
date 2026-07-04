@@ -1,7 +1,8 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use serde_json::Value;
 use ccgen::types::{CcgenConfig, MacroDef, RawConfig, CompileEntry};
+use ccgen::core::include_path::resolve_all;
 use ccgen::{run, core::merger, output::writer};
 
 fn fixture_dir() -> PathBuf {
@@ -289,4 +290,95 @@ fn empty_sources_warning() {
     assert!(output_path.exists(), "output file should be created even with no sources");
     let content = std::fs::read_to_string(&output_path).unwrap();
     assert_eq!(content.trim(), "[]", "empty sources should produce empty JSON array");
+}
+
+fn default_config(root: &Path) -> CcgenConfig {
+    CcgenConfig {
+        root: root.to_path_buf(),
+        compiler: None,
+        std: None,
+        defines: vec![],
+        undefs: vec![],
+        include_dirs: vec![],
+        include_exclude_dirs: vec![],
+        source_excludes: vec![],
+        no_gitignore: false,
+        output: PathBuf::from("out.json"),
+        verbose: false,
+        dry_run: false,
+    }
+}
+
+#[test]
+fn include_filter_basic() {
+    let tmp = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/include_filter");
+    let config = CcgenConfig {
+        root: tmp.clone(),
+        include_dirs: vec![PathBuf::from("has_headers")],
+        include_exclude_dirs: vec![],
+        ..default_config(&tmp)
+    };
+    let result = resolve_all(&config);
+    let result_strs: Vec<String> = result.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    assert!(result_strs.iter().any(|s| s.ends_with("has_headers")), "parent must be retained: {:?}", result_strs);
+    assert!(result_strs.iter().any(|s| s.ends_with("has_headers/sub")), "sub with a.h must be retained: {:?}", result_strs);
+    assert!(!result_strs.iter().any(|s| s.ends_with("empty")), "empty dir must be discarded: {:?}", result_strs);
+}
+
+#[test]
+fn include_filter_nested() {
+    let tmp = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/include_filter");
+    let config = CcgenConfig {
+        root: tmp.clone(),
+        include_dirs: vec![PathBuf::from("lib")],
+        include_exclude_dirs: vec![],
+        ..default_config(&tmp)
+    };
+    let result = resolve_all(&config);
+    let result_strs: Vec<String> = result.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    assert!(result_strs.iter().any(|s| s.ends_with("lib/core/internal")), "internal must be retained: {:?}", result_strs);
+    assert!(result_strs.iter().any(|s| s.ends_with("/lib/core") && !s.ends_with("internal")), "lib/core must be retained: {:?}", result_strs);
+}
+
+#[test]
+fn include_filter_no_headers_discarded() {
+    let tmp = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/include_filter");
+    let config = CcgenConfig {
+        root: tmp.clone(),
+        include_dirs: vec![PathBuf::from("no_headers")],
+        include_exclude_dirs: vec![],
+        ..default_config(&tmp)
+    };
+    let result = resolve_all(&config);
+    assert!(result.is_empty(), "no_headers should be empty: {:?}", result);
+}
+
+#[test]
+fn include_filter_exclude_priority() {
+    let tmp = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/include_filter");
+    let exclude_dir = tmp.join("has_headers/sub");
+    let config = CcgenConfig {
+        root: tmp.clone(),
+        include_dirs: vec![PathBuf::from("has_headers")],
+        include_exclude_dirs: vec![exclude_dir],
+        ..default_config(&tmp)
+    };
+    let result = resolve_all(&config);
+    let result_strs: Vec<String> = result.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    assert!(!result_strs.iter().any(|s| s.ends_with("sub")), "excluded sub must not appear: {:?}", result_strs);
+}
+
+#[test]
+fn include_filter_multiple_dirs() {
+    let tmp = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/include_filter");
+    let config = CcgenConfig {
+        root: tmp.clone(),
+        include_dirs: vec![PathBuf::from("has_headers"), PathBuf::from("lib")],
+        include_exclude_dirs: vec![],
+        ..default_config(&tmp)
+    };
+    let result = resolve_all(&config);
+    let result_strs: Vec<String> = result.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    assert!(result_strs.iter().any(|s| s.ends_with("has_headers/sub")), "has_headers/sub must be in result");
+    assert!(result_strs.iter().any(|s| s.ends_with("lib/core/internal")), "lib/core/internal must be in result");
 }
