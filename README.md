@@ -127,23 +127,29 @@ ccgen -v
 ccgen/
 ├── Cargo.toml
 ├── src/
-│   ├── main.rs          # CLI 入口
-│   ├── lib.rs           # 库入口 + run()
-│   ├── cli.rs           # CLI 参数解析（clap）
-│   ├── config.rs        # .ccgen.toml 解析
-│   ├── merger.rs        # 参数合并
-│   ├── discover.rs      # 源码文件发现
-│   ├── include_path.rs  # Include 路径处理
-│   ├── compile_cmd.rs   # 编译命令构建
-│   ├── output.rs        # JSON 输出
-│   ├── types.rs         # 数据结构定义
-│   └── error.rs         # 错误类型
+│   ├── main.rs              # CLI 入口
+│   ├── lib.rs               # 库入口 + run()
+│   ├── types.rs             # 共享类型 (RawConfig, CcgenConfig, CompileEntry)
+│   ├── error.rs             # 错误类型
+│   ├── input/               # 输入解析
+│   │   ├── mod.rs
+│   │   ├── cli.rs           # CLI 参数解析 (clap)
+│   │   └── config.rs        # .ccgen.toml 解析
+│   ├── core/                # 处理流水线
+│   │   ├── mod.rs
+│   │   ├── merger.rs        # 参数合并
+│   │   ├── discover.rs      # 源码文件发现
+│   │   ├── include_path.rs  # Include 路径处理
+│   │   └── compile_cmd.rs   # 编译命令构建
+│   └── output/              # 输出
+│       ├── mod.rs
+│       └── writer.rs        # JSON 输出 + 原子写入
 ├── tests/
 │   ├── integration_test.rs
 │   └── fixtures/
 └── doc/
     └── detail/
-        └── design-*.md  # 模块设计文档
+        └── design-*.md      # 模块设计文档
 ```
 
 ## 开发
