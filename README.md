@@ -42,10 +42,23 @@ ccgen -D NAME="spaced value"
 ccgen -D DEBUG -D VERSION=2 -D EXTRA
 ```
 
+### 语言标准
+
+```bash
+# 单一标准（仅影响对应语言的文件）
+ccgen --std=c11        # C 文件用 c11，C++ 文件用默认 gnu++11
+ccgen --std=c++17      # C++ 文件用 c++17，C 文件用默认 gnu11
+
+# 同时指定 C 和 C++ 标准（逗号分隔）
+ccgen --std=c11,c++17
+```
+
+自动检测规则：包含 `++` 的标准名识别为 C++ 标准，否则为 C 标准。
+
 ### Include 路径
 
 ```bash
-# 递归发现 Include 目录的所有子目录
+# 递归发现 Include 目录的所有子目录（自动过滤无头文件的目录）
 ccgen -I /usr/include -I /usr/local/include
 
 # 排除特定 Include 子目录
@@ -76,6 +89,16 @@ no_gitignore = false
 
 CLI 参数优先级高于配置文件。
 
+### 初始化配置文件
+
+```bash
+# 生成默认 .ccgen.toml 模板
+ccgen --init-config
+
+# 预览模板内容（不写文件）
+ccgen --init-config --dry-run
+```
+
 ### 输出控制
 
 ```bash
@@ -100,12 +123,13 @@ ccgen -v
 | `--exclude <PATTERN>` | 源码排除 glob，可重复 |
 | `--exclude-dir <DIR>` | Include 子目录排除，可重复 |
 | `--compiler <NAME>` | 覆盖编译器 |
-| `--std <STD>` | 语言标准（如 c11, c17, c++20） |
+| `--std <STD>` | 语言标准，支持逗号分隔（如 `c11,c++17`） |
 | `--no-gitignore` | 禁用 .gitignore 过滤 |
 | `-o, --output <PATH>` | 输出路径 |
 | `--config <PATH>` | 配置文件路径 |
 | `--dry-run` | 仅输出到 stdout |
 | `-v, --verbose` | 详细输出 |
+| `--init-config` | 生成默认 .ccgen.toml 配置文件模板 |
 
 ## 输出格式
 
