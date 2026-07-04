@@ -1,0 +1,22 @@
+/target
+*.lock
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tools
+.superpowers/
+.claude/
+.opencode/
+openspec/
+
+# Project scratch
+eden/
